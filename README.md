@@ -309,7 +309,7 @@ Contributions are welcome! Follow these steps:
 
 1. **Fork** the repository and clone it:
    ```bash
-   git clone <YOUR-FORK-URL>
+   git clone https://github.com/Singularity-MX/svc-weatherForecast-toka
    cd api
    ```
 2. **Create a descriptive branch** from the main one:
