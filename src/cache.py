@@ -1,4 +1,4 @@
-"""In-memory TTL cache with single-flight (one upstream call per key)."""
+"""Tiny in-memory cache with a TTL. If two requests ask for the same key at the same time, only one goes to the provider."""
 from __future__ import annotations
 
 import threading
@@ -15,7 +15,7 @@ class TTLCache:
         self._lock = threading.Lock()
 
     def get_or_compute(self, key: Hashable, ttl_s: float, factory: Callable[[], Any]) -> Any:
-        """Return the cached value or compute it with `factory`. Exceptions are never cached."""
+        # errors are not cached, the next call just tries again
         with self._lock:
             entry = self._data.get(key)
             if entry and entry[0] > time.monotonic():

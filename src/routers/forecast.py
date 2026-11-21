@@ -3,11 +3,11 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request, Response
 
 from .. import rate_limit
-from ..config import SERVICE_NAME, VERSION
+from ..config import get_settings
 from ..schemas import ErrorResponse, PolygonForecastResponse, PolygonRequest
 from ..services import forecast as forecast_service
 
-router = APIRouter(prefix="/api/v1", tags=["Forecast"])
+router = APIRouter(prefix=get_settings().api_prefix, tags=["Forecast"])
 
 _RATE_HEADERS = {
     "X-RateLimit-Limit": {"description": "Units allowed per window", "schema": {"type": "integer"}},
@@ -23,7 +23,7 @@ for each distinct ~1 km **cell** (vertices of one parcel normally share a single
 | Horizon | `type` | What it is |
 |---|---|---|
 | `short_term` | `forecast` | 1-15 days from multi-model ensembles: median, P10-P90 band, rain probability, frost / heat / heavy-rain probabilities, accumulated rain |
-| `seasonal` | `outlook` | Weeks (EC46) and months (SEAS5) as category probabilities. **Low confidence**; not a forecast |
+| `seasonal` | `outlook` | Weeks (EC46) and months (SEAS5): ensemble-mean anomaly + tendency (no probabilities). **Low confidence**; not a forecast |
 
 A weather forecast of days is **not** a seasonal climate projection: keep the two separate in the UI.
 Historical normals are provided by `svc-weatherHistory-toka`, not by this service.
@@ -49,5 +49,5 @@ def post_forecast(payload: PolygonRequest, request: Request, response: Response)
     rate_limit.enforce(request, response, cost=rate_limit.distinct_cells(points))
     cells = forecast_service.compute_polygon(points, payload.horizons)
     return PolygonForecastResponse(
-        service=SERVICE_NAME, version=VERSION, timestamp_utc=datetime.now(timezone.utc).isoformat(),
+        service=get_settings().service_name, version=get_settings().service_version, timestamp_utc=datetime.now(timezone.utc).isoformat(),
         total_vertices=len(points), total_cells=len(cells), requested_horizons=payload.horizons, cells=cells)

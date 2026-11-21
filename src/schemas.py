@@ -1,4 +1,4 @@
-"""Pydantic request/response contracts. They also drive the Swagger UI (/docs)."""
+"""Request and response models. Swagger (/docs) is generated from these."""
 from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional
@@ -9,7 +9,7 @@ Horizon = Literal["short_term", "seasonal"]
 ALL_HORIZONS: List[str] = ["short_term", "seasonal"]
 
 
-# ============================ REQUEST ============================
+# request
 class Coordinate(BaseModel):
     lat: float = Field(..., ge=-90.0, le=90.0, description="Vertex latitude (decimal degrees, WGS84)", examples=[20.9215])
     lon: float = Field(..., ge=-180.0, le=180.0, description="Vertex longitude (decimal degrees, WGS84)", examples=[-101.423])
@@ -41,9 +41,9 @@ class PolygonRequest(BaseModel):
     }]})
 
 
-# ============================ COMMON ============================
+# shared
 class Metadata(BaseModel):
-    """Traceability block required by Toka (units, resolution, CRS, provenance, quality)."""
+    """Where the data comes from and how good it is (units, resolution, CRS, quality)."""
     provider: str
     crs: str = "EPSG:4326"
     spatial_resolution: str
@@ -62,7 +62,7 @@ class _HorizonBase(BaseModel):
     metadata: Optional[Metadata] = None
 
 
-# ============================ 1. SHORT TERM ============================
+# short term
 class Band(BaseModel):
     p10: Optional[float] = Field(None, description="10th percentile across ensemble members")
     p50: Optional[float] = Field(None, description="Median across members (central value)")
@@ -124,29 +124,15 @@ class ShortTermHorizon(_HorizonBase):
     days: List[ShortTermDay] = Field(default_factory=list)
 
 
-# ============================ 2. SEASONAL ============================
-class TempProbabilities(BaseModel):
-    colder: int = Field(..., description="% of members below -band")
-    normal: int
-    warmer: int = Field(..., description="% of members above +band")
-
-
-class PrecipProbabilities(BaseModel):
-    drier: int
-    normal: int
-    wetter: int
-
-
+# seasonal
 class TemperatureOutlook(BaseModel):
-    anomaly_c: Optional[float] = Field(None, description="Median anomaly (deg C) vs. the model's own climatology")
-    probabilities_pct: Optional[TempProbabilities] = None
-    most_likely_category: Optional[Literal["colder", "normal", "warmer"]] = None
+    anomaly_c: Optional[float] = Field(None, description="Ensemble-mean anomaly (deg C) vs. the ECMWF model's own climatology")
+    tendency: Optional[Literal["colder", "normal", "warmer"]] = Field(None, description="Sign of the anomaly beyond +/- temp_normal_band_c. A tendency, NOT a probability.")
 
 
 class PrecipitationOutlook(BaseModel):
-    anomaly_pct: Optional[float] = Field(None, description="Median relative anomaly (%) vs. the model's own climatology")
-    probabilities_pct: Optional[PrecipProbabilities] = None
-    most_likely_category: Optional[Literal["drier", "normal", "wetter"]] = None
+    anomaly_pct: Optional[float] = Field(None, description="Ensemble-mean relative anomaly (%) vs. the model climatology. Null when that climatology is too small for a ratio to mean anything.")
+    tendency: Optional[Literal["drier", "normal", "wetter"]] = Field(None, description="Sign of the anomaly beyond +/- precip_normal_band_pct. A tendency, NOT a probability.")
     note: Optional[str] = None
 
 
@@ -155,31 +141,31 @@ class SeasonalPeriod(BaseModel):
     end: str
     scale: Literal["weekly", "monthly"]
     model: str = Field(..., description="EC46 (weekly) or SEAS5 (monthly)")
-    members: int
     temperature: TemperatureOutlook
     precipitation: PrecipitationOutlook
-    signal_strength: Literal["weak", "moderate", "strong"] = Field(..., description="From the dominant category's probability (<45 weak, 45-59 moderate, >=60 strong)")
 
 
 class SeasonalThresholds(BaseModel):
     temp_normal_band_c: float
     precip_normal_band_pct: float
-    criterion: str = "Fixed thresholds applied to each member's anomaly (not hindcast terciles)."
+    precip_min_climatology: float = Field(..., description="Model climatology (units/day) below which the precipitation ratio is withheld")
+    criterion: str = "Fixed thresholds applied to the ensemble-mean anomaly (not hindcast terciles)."
 
 
 class SeasonalHorizon(_HorizonBase):
     type: Literal["outlook"] = "outlook"
     source: str = "ECMWF EC46 (weekly) + SEAS5 (monthly), via Open-Meteo Seasonal API"
-    format: str = "category probability"
+    format: str = "ensemble-mean anomaly and tendency"
     confidence: str = Field("low", description="Skill is limited over central Mexico; always show this in the UI.")
-    note: str = ("Outlook, not a forecast: anomalies are relative to the ECMWF model's own climatology, "
-                 "not to the historical normals of svc-weatherHistory-toka, and the data carry no local bias correction.")
+    note: str = ("Outlook, not a forecast. Open-Meteo returns weekly/monthly values already averaged over the ensemble, so no "
+                 "member spread or category probabilities are available here. Anomalies are relative to the ECMWF model's own "
+                 "climatology, not to the normals of svc-weatherHistory-toka, and carry no local bias correction.")
     thresholds: Optional[SeasonalThresholds] = None
     weekly: List[SeasonalPeriod] = Field(default_factory=list)
     monthly: List[SeasonalPeriod] = Field(default_factory=list)
 
 
-# ============================ RESPONSE ============================
+# response
 class CellLocation(BaseModel):
     latitude: float = Field(..., description="Latitude actually queried (rounded to the ~1 km cache cell)")
     longitude: float = Field(..., description="Longitude actually queried (rounded to the ~1 km cache cell)")
@@ -188,7 +174,7 @@ class CellLocation(BaseModel):
 
 
 class CellForecast(BaseModel):
-    """Forecast for one ~1 km cell. Vertices that fall in the same cell share one result."""
+    """Result for one ~1 km cell. Vertices that land in the same cell share it."""
     vertices: List[int] = Field(..., description="1-based indexes of the request vertices covered by this cell")
     location: CellLocation
     short_term: Optional[ShortTermHorizon] = None
@@ -219,6 +205,7 @@ class HealthResponse(BaseModel):
     status: str = "ok"
     service: str
     version: str
+    api_version: str
     port: int
     ensemble_models: List[str]
     rate_limit: RateLimitInfo

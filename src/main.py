@@ -1,24 +1,24 @@
+"""Toka future-climate service: short term forecast and seasonal outlook.
+
+Run:  uvicorn src.main:app --host 0.0.0.0 --port 5000     (Swagger at /docs, ReDoc at /redoc)
+"""
 import logging
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
-from fastapi.middleware.cors import CORSMiddleware
 
-from .config import SERVICE_NAME, VERSION
+from .config import get_settings
 from .http_client import UpstreamError
 from .routers import forecast, health
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 DESCRIPTION = """
 **Future-climate service** of *Toka*: consumed by the environmental data unifier to build a field's environmental context.
 Each horizon declares what it is, so the UI and the recommendation system never confuse them.
 
 1. **Short term (1-15 days)** - `forecast`: ECMWF IFS/AIFS and Google WeatherNext 2 ensembles (Open-Meteo): median, P10-P90 band, rain probability, extremes.
-2. **Seasonal (weeks to 7 months)** - `outlook`: ECMWF EC46 + SEAS5 category probabilities. **Low confidence** over central Mexico.
+2. **Seasonal (weeks to 7 months)** - `outlook`: ECMWF EC46 + SEAS5 ensemble-mean anomaly and tendency. **Low confidence** over central Mexico.
 
 Historical climate (normals, trends) is **not** served here: it belongs to `svc-weatherHistory-toka`.
 No agronomic logic lives in this service; it only delivers environmental evidence with its metadata and uncertainty.
@@ -34,36 +34,15 @@ TAGS = [
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(
-        title=SERVICE_NAME,
-        description=DESCRIPTION,
-        version=VERSION,
-        openapi_tags=TAGS,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
-    )
-
-    # CORS: Local development only, solo localhost 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[
-            "http://localhost",
-        ],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
+    cfg = get_settings()
+    app = FastAPI(title=cfg.service_name, description=DESCRIPTION, version=cfg.service_version, openapi_tags=TAGS,
+                  docs_url="/docs", redoc_url="/redoc", openapi_url="/openapi.json")
     app.include_router(health.router)
     app.include_router(forecast.router)
 
     @app.exception_handler(UpstreamError)
     async def _upstream_error(_: Request, exc: UpstreamError):
-        return JSONResponse(
-            status_code=502,
-            content={"detail": f"Weather provider error: {exc}"}
-        )
+        return JSONResponse(status_code=502, content={"detail": f"Weather provider error: {exc}"})
 
     @app.get("/", include_in_schema=False)
     def _root():

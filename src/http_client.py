@@ -1,4 +1,4 @@
-"""Shared HTTP client (retries, concurrency cap, normalized errors)."""
+"""One shared requests session, with retries and a cap on parallel calls."""
 from __future__ import annotations
 
 import logging
@@ -15,7 +15,7 @@ log = logging.getLogger("toka.http")
 
 
 class UpstreamError(Exception):
-    """Failure while calling an external provider (Open-Meteo, NASA POWER)."""
+    """Something went wrong talking to Open-Meteo."""
 
     def __init__(self, provider: str, status: Optional[int], detail: str):
         self.provider = provider
