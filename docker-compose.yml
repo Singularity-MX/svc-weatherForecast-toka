@@ -1,0 +1,27 @@
+# Runtime hardening that a Dockerfile can't enforce by itself.
+# Run with:  docker compose up -d --build
+services:
+  weatherforecast:
+    build: .
+    image: svc-weatherforecast-toka
+    container_name: weatherforecast
+    restart: unless-stopped
+
+    # only reachable from this machine. In a real deployment drop `ports` and let the
+    # unifier reach the service through an internal docker network instead.
+    ports:
+      - "127.0.0.1:5000:5000"
+
+    # the key is passed from your shell, never written in a file: export OPEN_METEO_API_KEY=...
+    environment:
+      - OPEN_METEO_API_KEY=${OPEN_METEO_API_KEY:-}
+
+    read_only: true                    # root filesystem can't be written
+    tmpfs:
+      - /tmp                           # scratch space in memory, gone on restart
+    cap_drop:
+      - ALL                            # no linux capabilities at all
+    security_opt:
+      - no-new-privileges:true         # processes can't gain more privileges
+    pids_limit: 100                    # stops fork bombs
+    mem_limit: 512m

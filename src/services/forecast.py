@@ -1,5 +1,5 @@
-"""Orchestrator: groups vertices into ~1 km cells and computes the requested horizons per cell,
-with caching and partial degradation."""
+"""Glue code: groups the vertices into cells, runs each horizon per cell (cached) and
+keeps going if one horizon fails."""
 from __future__ import annotations
 
 import logging
@@ -23,7 +23,7 @@ def cell_of(lat: float, lon: float) -> Cell:
 
 
 def group_by_cell(points: Sequence[Tuple[float, float]]) -> Dict[Cell, List[int]]:
-    """Map each distinct cell to the 1-based indexes of the vertices that fall in it (insertion ordered)."""
+    # cell -> vertex numbers (1-based) that fall inside it, in the order they came
     cells: Dict[Cell, List[int]] = {}
     for i, (lat, lon) in enumerate(points, start=1):
         cells.setdefault(cell_of(lat, lon), []).append(i)
@@ -59,7 +59,7 @@ def compute_cell(cell: Cell, vertices: List[int], horizons: Sequence[str]) -> Ce
         except UpstreamError as e:
             log.warning("horizon %s failed at %s: %s", h, cell, e)
             fields[h] = _EMPTY[h](available=False, error=str(e))
-        except Exception as e:  # internal defect: do not take down the other horizons
+        except Exception as e:  # a bug in one horizon shouldn't kill the other one
             log.exception("internal error in horizon %s", h)
             fields[h] = _EMPTY[h](available=False, error=f"internal error: {e.__class__.__name__}")
 

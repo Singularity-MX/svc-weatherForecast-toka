@@ -1,9 +1,11 @@
-"""Per-client rate limiting (in-memory sliding window, cost based).
+"""Simple per-client rate limit, sliding window, kept in memory.
 
-* Client = source IP (or the first X-Forwarded-For hop when TRUST_PROXY_HEADERS=true).
-* Cost = number of distinct ~1 km cache cells in the request (a 4-vertex parcel usually costs 1),
-  which mirrors the real upstream work. Budget = RATE_LIMIT_UNITS per RATE_LIMIT_WINDOW_S.
-* State lives in process memory: with several workers/replicas each one enforces its own budget.
+A client is its IP (or the first X-Forwarded-For hop if trust_proxy_headers is on).
+A request costs one unit per distinct cell, so a normal parcel costs 1. That matches how
+much work we really do against Open-Meteo.
+
+Heads up: the counters live in the process. With several workers or replicas each one
+keeps its own count. If that ever matters this needs redis or similar.
 """
 from __future__ import annotations
 
@@ -25,8 +27,8 @@ class Decision:
     limit: int
     remaining: int
     cost: int
-    reset_s: float        # seconds until the whole budget is restored
-    retry_after_s: float  # seconds until this request would fit (0 when allowed)
+    reset_s: float        # seconds until the full budget is back
+    retry_after_s: float  # seconds until this request would fit, 0 if it did
 
 
 class SlidingWindowLimiter:
@@ -97,7 +99,7 @@ def client_id(request: Request) -> str:
 
 def distinct_cells(points: Iterable[Tuple[float, float]]) -> int:
     d = get_settings().cache_decimals
-    return len({(round(lat, d), round(lon, d)) for lat, lon in points})  # same key as services.forecast.cell_of
+    return len({(round(lat, d), round(lon, d)) for lat, lon in points})  # keep this the same as cell_of() in services/forecast.py
 
 
 def _headers(dec: Decision) -> Dict[str, str]:
@@ -110,7 +112,7 @@ def _headers(dec: Decision) -> Dict[str, str]:
 
 
 def enforce(request: Request, response: Response, cost: int = 1) -> None:
-    """Charge `cost` units to the caller. Raises HTTP 429 when the budget is exhausted."""
+    # charges the caller and raises a 429 when they are out of budget
     settings = get_settings()
     if not settings.rate_limit_enabled:
         return

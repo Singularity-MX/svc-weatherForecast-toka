@@ -1,7 +1,7 @@
-"""Horizon 1 - Short term (1-15 days): ensembles via the Open-Meteo Ensemble API.
+"""Short term forecast (up to 15 days) from the Open-Meteo ensemble API.
 
-Central value = median of members; uncertainty = P10-P90; rain probability = % of members >= threshold.
-Members from all models are pooled into one multi-model ensemble.
+We pool the members of every model into one big ensemble. The "value" is the median,
+the band is p10-p90 and a probability is just the share of members that cross a threshold.
 """
 from __future__ import annotations
 
@@ -23,7 +23,8 @@ from ..schemas import (Band, DayExtremes, EnsembleModel, ExtremeThresholds, Meta
 
 log = logging.getLogger("toka.short_term")
 
-# logical id -> candidate tokens (tried in order; Open-Meteo has renamed models before)
+# open-meteo has renamed models before, so each one has a list of names to try in order.
+# (the "_ensemble" ones are what worked on the real response)
 TOKENS: Dict[str, List[str]] = {
     "ecmwf_ifs025": ["ecmwf_ifs025_ensemble", "ecmwf_ifs025"],
     "ecmwf_aifs025": ["ecmwf_aifs025_ensemble", "ecmwf_aifs025"],
@@ -45,7 +46,7 @@ class _ModelResult:
     id: str
     token: str
     dates: List[str]
-    members: Dict[str, np.ndarray]   # var -> (n_members, n_days)
+    members: Dict[str, np.ndarray]   # variable -> array of (members, days)
     elevation: Optional[float] = None
     timezone: Optional[str] = None
 
@@ -55,7 +56,7 @@ def _extract_members(daily: dict, var: str, token: str) -> Optional[np.ndarray]:
     cols = [k for k in daily if pattern.match(k)]
     if not cols:
         return None
-    return np.array([daily[c] for c in sorted(cols)], dtype=float)  # None -> nan
+    return np.array([daily[c] for c in sorted(cols)], dtype=float)  # missing values come as None, this makes them nan
 
 
 def _request(lat: float, lon: float, token: str, days: int, variables: List[str]) -> dict:
@@ -81,11 +82,11 @@ def _fetch_model(lat: float, lon: float, model_id: str, days: int) -> _ModelResu
             except UpstreamError as e:
                 if e.status != 400:
                     raise
-                data = _request(lat, lon, token, days, CORE_VARS)  # extra variables unavailable
+                data = _request(lat, lon, token, days, CORE_VARS)  # this model doesn't have the extra variables, retry with the basic ones
         except UpstreamError as e:
             last = e
             if e.status == 400:
-                continue  # unknown token: try the next candidate
+                continue  # name not accepted, try the next one
             raise
         daily = data.get("daily") or {}
         if "time" not in daily:
@@ -124,7 +125,7 @@ def _prob(col: np.ndarray, cond) -> Optional[float]:
 
 
 def _summary(precip: np.ndarray, threshold: float) -> Optional[ShortTermSummary]:
-    """Per-member accumulated precipitation and rainy-day count (members with a complete series only)."""
+    # total rain and number of rainy days per member; members with gaps are left out
     complete = np.isfinite(precip).all(axis=1)
     if not complete.any():
         return None
@@ -138,7 +139,6 @@ def _summary(precip: np.ndarray, threshold: float) -> Optional[ShortTermSummary]
 
 
 def calculate(lat: float, lon: float) -> Tuple[ShortTermHorizon, Optional[float], Optional[str]]:
-    """Return (horizon block, elevation_m, timezone)."""
     s = get_settings()
     ids = list(s.ensemble_models)
     warnings_out: List[str] = []

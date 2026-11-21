@@ -1,7 +1,11 @@
-"""Horizon 2 - Seasonal: outlooks (not forecasts) from EC46 (weekly) and SEAS5 (monthly).
+"""Seasonal outlook: weekly from EC46, monthly from SEAS5.
 
-Open-Meteo computes anomalies against the model's own climatology (ECMWF hindcasts):
-anomaly = forecast - model climatology. No external normal (NASA POWER) is subtracted.
+Open-Meteo already gives these averaged over the ensemble (one series, no members; we saw
+it on a real response), so all we can do is report the anomaly and a tendency. Per-member
+probabilities are not possible here.
+
+The anomaly is against the ECMWF model's own climatology, not against NASA or the
+historical service, so don't mix them.
 """
 from __future__ import annotations
 
@@ -17,13 +21,11 @@ import numpy as np
 from .. import http_client
 from ..config import get_settings
 from ..http_client import UpstreamError
-from ..schemas import (Metadata, PrecipitationOutlook, PrecipProbabilities, SeasonalHorizon, SeasonalPeriod,
-                       SeasonalThresholds, TempProbabilities, TemperatureOutlook)
+from ..schemas import Metadata, PrecipitationOutlook, SeasonalHorizon, SeasonalPeriod, SeasonalThresholds, TemperatureOutlook
 
 log = logging.getLogger("toka.seasonal")
 
 VARS = ["temperature_2m_mean", "temperature_2m_anomaly", "precipitation_mean", "precipitation_anomaly"]
-PRECIP_EPS = 0.05  # model climatology below this (units/day): the ratio is unreliable
 
 
 def _series(block: dict, var: str, model: str) -> Optional[np.ndarray]:
@@ -37,24 +39,6 @@ def _parse_date(s: str) -> date:
     return date.fromisoformat(s + "-01" if len(s) == 7 else s)
 
 
-def _round_to_100(fractions: List[float]) -> List[int]:
-    raw = [f * 100 for f in fractions]
-    base = [int(r) for r in raw]
-    for i in sorted(range(len(raw)), key=lambda i: raw[i] - base[i], reverse=True)[: 100 - sum(base)]:
-        base[i] += 1
-    return base
-
-
-def _median(a: np.ndarray) -> Optional[float]:
-    v = a[np.isfinite(a)]
-    return round(float(np.median(v)), 2) if v.size else None
-
-
-def _strength(probs: List[int]) -> str:
-    top = max(probs)
-    return "strong" if top >= 60 else ("moderate" if top >= 45 else "weak")
-
-
 def _request(lat: float, lon: float, scale: str, model: str, days: int) -> dict:
     s = get_settings()
     params = {"latitude": lat, "longitude": lon, "models": model, "forecast_days": days,
@@ -66,6 +50,11 @@ def _request(lat: float, lon: float, scale: str, model: str, days: int) -> dict:
     if not block or "time" not in block:
         raise UpstreamError("open-meteo-seasonal", None, f"response has no {scale} block")
     return block
+
+
+def _mean(a: np.ndarray) -> Optional[float]:
+    v = a[np.isfinite(a)]
+    return float(v.mean()) if v.size else None
 
 
 def _periods(block: dict, scale: str, model: str) -> List[SeasonalPeriod]:
@@ -82,42 +71,27 @@ def _periods(block: dict, scale: str, model: str) -> List[SeasonalPeriod]:
         end = start + timedelta(days=6) if scale == "weekly" else start.replace(day=calendar.monthrange(start.year, start.month)[1])
         if end < yesterday:
             continue
-        n = 0
-        all_probs: List[int] = []
 
         temp = TemperatureOutlook()
-        if t_anom is not None:
-            v = t_anom[:, i][np.isfinite(t_anom[:, i])]
-            if v.size:
-                n = max(n, v.size)
-                cold, warm = float((v < -s.temp_normal_band_c).mean()), float((v > s.temp_normal_band_c).mean())
-                p = _round_to_100([cold, 1 - cold - warm, warm])
-                all_probs += p
-                temp = TemperatureOutlook(
-                    anomaly_c=_median(v), probabilities_pct=TempProbabilities(colder=p[0], normal=p[1], warmer=p[2]),
-                    most_likely_category=("colder", "normal", "warmer")[int(np.argmax(p))])
+        if t_anom is not None and (an := _mean(t_anom[:, i])) is not None:
+            tendency = "warmer" if an > s.temp_normal_band_c else ("colder" if an < -s.temp_normal_band_c else "normal")
+            temp = TemperatureOutlook(anomaly_c=round(an, 2), tendency=tendency)
 
         precip = PrecipitationOutlook()
         if p_anom is not None and p_mean is not None:
-            an, me = p_anom[:, i], p_mean[:, i]
-            clim = float(np.nanmean(me - an)) if np.isfinite(me - an).any() else float("nan")
-            if np.isfinite(clim) and clim >= PRECIP_EPS:
-                pct = an / clim * 100
-                v = pct[np.isfinite(pct)]
-                n = max(n, v.size)
-                dry, wet = float((v < -s.precip_normal_band_pct).mean()), float((v > s.precip_normal_band_pct).mean())
-                p = _round_to_100([dry, 1 - dry - wet, wet])
-                all_probs += p
-                precip = PrecipitationOutlook(
-                    anomaly_pct=_median(v), probabilities_pct=PrecipProbabilities(drier=p[0], normal=p[1], wetter=p[2]),
-                    most_likely_category=("drier", "normal", "wetter")[int(np.argmax(p))])
-            else:
-                precip = PrecipitationOutlook(note="Model climatology is ~0 mm: inconclusive signal.")
-        if not all_probs:
+            an, me = _mean(p_anom[:, i]), _mean(p_mean[:, i])
+            if an is not None and me is not None:
+                clim = me - an  # the climatology the model used = value minus anomaly
+                if clim >= s.precip_min_climatology:
+                    pct = an / clim * 100
+                    tendency = "wetter" if pct > s.precip_normal_band_pct else ("drier" if pct < -s.precip_normal_band_pct else "normal")
+                    precip = PrecipitationOutlook(anomaly_pct=round(pct, 1), tendency=tendency)
+                else:
+                    precip = PrecipitationOutlook(note="Model climatology is too small (dry season): a relative anomaly is not meaningful.")
+        if temp.anomaly_c is None and precip.anomaly_pct is None and precip.note is None:
             continue
-        out.append(SeasonalPeriod(
-            start=start.isoformat(), end=end.isoformat(), scale=scale, model="EC46" if scale == "weekly" else "SEAS5",
-            members=int(n), temperature=temp, precipitation=precip, signal_strength=_strength(all_probs)))
+        out.append(SeasonalPeriod(start=start.isoformat(), end=end.isoformat(), scale=scale,
+                                  model="EC46" if scale == "weekly" else "SEAS5", temperature=temp, precipitation=precip))
     return out
 
 
@@ -148,10 +122,11 @@ def calculate(lat: float, lon: float) -> SeasonalHorizon:
             provider="Open-Meteo Seasonal API (ECMWF EC46 + SEAS5)",
             spatial_resolution="Native ~36 km model grid",
             temporal_resolution="weekly (EC46, up to 6 weeks) and monthly (SEAS5, up to 7 months)",
-            units={"temperature_anomaly": "degC", "precipitation_anomaly": "% of the model climatology",
-                   "probabilities": "% of ensemble members"},
-            quality="No bias correction. Anomalies are relative to the ECMWF hindcast climatology. Skill is limited over central Mexico."),
+            units={"temperature_anomaly": "degC", "precipitation_anomaly": "% of the model climatology"},
+            quality="Ensemble-mean values (no spread or probabilities). No bias correction. Anomalies are relative to the ECMWF "
+                    "hindcast climatology. Skill is limited over central Mexico."),
         confidence=s.seasonal_confidence,
-        thresholds=SeasonalThresholds(temp_normal_band_c=s.temp_normal_band_c, precip_normal_band_pct=s.precip_normal_band_pct),
+        thresholds=SeasonalThresholds(temp_normal_band_c=s.temp_normal_band_c, precip_normal_band_pct=s.precip_normal_band_pct,
+                                       precip_min_climatology=s.precip_min_climatology),
         weekly=results.get("weekly", []), monthly=results.get("monthly", []), warnings=warnings_out,
         generated_utc=datetime.now(timezone.utc).isoformat())
